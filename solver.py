@@ -130,6 +130,8 @@ class Solver(object):
     def train(self):
 
         print("======================TRAIN MODE======================")
+        # torch.autograd.set_detect_anomaly(True)
+
 
         time_now = time.time()
         path = self.model_save_path

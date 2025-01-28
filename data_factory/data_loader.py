@@ -157,6 +157,151 @@ class SMAPSegLoader(object):
                 self.test_labels[index // self.step * self.win_size:index // self.step * self.win_size + self.win_size])
 
 
+
+class WACASegLoader(Dataset):
+    """ Updated for scaling """
+    def __init__(self, data_path, win_size, step, mode="train"):
+        self.mode = mode
+        self.step = step
+        self.win_size = win_size
+        
+        # Read raw data (including timestamp)
+        data = pd.read_csv(data_path + '/train.csv')
+        
+        self.timestamps_train = data.iloc[:, 1].values
+        data = data.values[:, [0, 2, 3, 4]]  # Keep sensor, x, y, z columns only
+        data = np.nan_to_num(data)
+
+        # Compute min/max for each sensor and feature (x, y, z) from train data 
+        self.sensor_min_max = self.compute_sensor_min_max(data)
+
+        # Now scale the training data (excluding timestamp)
+        scaled_data = self.min_max_scale(data, self.sensor_min_max)
+        
+        # Scale timestamps using StandardScaler
+        self.timestamp_scaler = StandardScaler().fit(self.timestamps_train.reshape(-1, 1))
+        scaled_timestamps_train = self.timestamp_scaler.transform(self.timestamps_train.reshape(-1, 1))
+
+        
+         # Reattach timestamps to scaled data (place timestamp back as the first column)
+        self.train = np.column_stack((scaled_timestamps_train, scaled_data[:, 1:]))
+        print("Train data with ts", self.train[:5])
+        print("Training scale complete")
+
+        # Read and scale the test data using the same min/max from training
+        test_data = pd.read_csv(data_path + '/test.csv')
+        
+        self.timestamps_test = test_data.iloc[:, 1].values
+        test_data = test_data.values[:, [0, 2, 3, 4]]  # Keep sensor, x, y, z columns only
+        test_data = np.nan_to_num(test_data)
+        
+        # scale the test data (excluding timestamp)
+        self.test = self.min_max_scale(test_data, self.sensor_min_max)
+        
+        # Scale timestamps using the same StandardScaler
+        scaled_timestamps_test = self.timestamp_scaler.transform(self.timestamps_test.reshape(-1, 1))
+        
+        self.test = np.column_stack((scaled_timestamps_test, self.test[:, 1:]))
+        print("test data:", self.test[:5])
+
+        # Read test labels
+        self.test_labels = pd.read_csv(data_path + '/test_label.csv').values[:, 1:]
+        
+        print("test:", self.test.shape)
+        print("train:", self.train.shape)
+
+
+    def compute_sensor_min_max(self, data):
+        """
+        Compute the min and max for each feature (x, y, z) for each sensor from the raw data.
+        
+        Returns:
+            dict: Min/max values for each feature for each sensor.
+        """
+        # Initialize the dictionary for storing min/max values
+        sensor_min_max = {}
+        # Extract columns: sensor labels, x, y, z (assuming sensor label is in column 1)
+        sensor_labels = data[:, 0].astype(int)  # Assuming sensor label is in column 1
+        x_values = data[:, 1]
+        y_values = data[:, 2]
+        z_values = data[:, 3]
+
+        # Compute min/max for each sensor
+        for sensor_label in np.unique(sensor_labels):
+            sensor_label = int(sensor_label)
+            sensor_mask = sensor_labels == sensor_label
+            sensor_x = x_values[sensor_mask]
+            sensor_y = y_values[sensor_mask]
+            sensor_z = z_values[sensor_mask]
+
+            # Store min and max for each feature (x, y, z) for the current sensor
+            sensor_min_max[sensor_label] = {
+                'x': (sensor_x.min(), sensor_x.max()),
+                'y': (sensor_y.min(), sensor_y.max()),
+                'z': (sensor_z.min(), sensor_z.max())
+            }
+
+        return sensor_min_max
+
+    def min_max_scale(self, data, sensor_min_max):
+        """
+        Apply min-max scaling to the data using the provided sensor min/max values.
+        
+        Args:
+            data (numpy array): The raw data to scale.
+            sensor_min_max (dict): Dictionary containing min/max values for each feature for each sensor.
+        
+        Returns:
+            numpy array: The scaled data.
+        """
+        scaled_data = data.copy()
+        
+        # Extract columns: sensor labels, x, y, z (assuming sensor label is in column 0)
+        sensor_labels = data[:, 0].astype(int)  # Assuming sensor label is in column 0
+        x_values = data[:, 1]
+        y_values = data[:, 2]
+        z_values = data[:, 3]
+
+        # Apply scaling for each sensor (excluding timestamp)
+        for sensor_label in np.unique(sensor_labels):
+            print("Unique sensor labels:", np.unique(sensor_labels))
+            sensor_label = int(sensor_label)
+            # Get min and max for each feature of this sensor
+            min_x, max_x = sensor_min_max[sensor_label]['x']
+            min_y, max_y = sensor_min_max[sensor_label]['y']
+            min_z, max_z = sensor_min_max[sensor_label]['z']
+
+            # Scale the data for the current sensor
+            sensor_mask = sensor_labels == sensor_label
+            scaled_data[sensor_mask, 1] = (x_values[sensor_mask] - min_x) / (max_x - min_x)
+            scaled_data[sensor_mask, 2] = (y_values[sensor_mask] - min_y) / (max_y - min_y)
+            scaled_data[sensor_mask, 3] = (z_values[sensor_mask] - min_z) / (max_z - min_z)
+
+        return scaled_data
+    
+    def __len__(self):
+        """
+        Number of images in the object dataset.
+        mode : "train" or "test"
+        """
+        if self.mode == "train":
+            return (self.train.shape[0] - self.win_size) // self.step + 1
+        elif (self.mode == 'test'):
+            return (self.test.shape[0] - self.win_size) // self.step + 1
+        else:
+            return (self.train.shape[0] - self.win_size) // self.step + 1
+
+    def __getitem__(self, index):
+        index = index * self.step
+        if self.mode == "train":
+            return np.float32(self.train[index:index + self.win_size]), np.float32(self.test_labels[0:self.win_size])
+        elif (self.mode == 'test'):
+            return np.float32(self.test[index:index + self.win_size]), np.float32(
+                self.test_labels[index:index + self.win_size])
+        else:
+            return np.float32(self.train[index:index + self.win_size]), np.float32(self.test_labels[0:self.win_size])
+        
+
 class SMDSegLoader(object):
     def __init__(self, data_path, win_size, step, mode="train"):
         self.mode = mode
@@ -208,6 +353,8 @@ def get_loader_segment(data_path, batch_size, win_size=100, step=100, mode='trai
         dataset = SMAPSegLoader(data_path, win_size, 1, mode)
     elif (dataset == 'PSM'):
         dataset = PSMSegLoader(data_path, win_size, 1, mode)
+    elif (dataset == 'WACA'):
+        dataset = WACASegLoader(data_path, win_size, 1, mode)
 
     shuffle = False
     if mode == 'train':
