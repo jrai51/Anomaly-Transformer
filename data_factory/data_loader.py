@@ -156,60 +156,40 @@ class SMAPSegLoader(object):
                               index // self.step * self.win_size:index // self.step * self.win_size + self.win_size]), np.float32(
                 self.test_labels[index // self.step * self.win_size:index // self.step * self.win_size + self.win_size])
 
-
-
 class WACASegLoader(Dataset):
-    """ Updated for scaling """
     def __init__(self, data_path, win_size, step, mode="train"):
         self.mode = mode
         self.step = step
         self.win_size = win_size
         
-        # Read raw data (including timestamp)
+        # Read raw data
         data = pd.read_csv(data_path + '/train.csv')
-        
-        self.timestamps_train = data.iloc[:, 1].values
         data = data.values[:, [0, 2, 3, 4]]  # Keep sensor, x, y, z columns only
         data = np.nan_to_num(data)
 
         # Compute min/max for each sensor and feature (x, y, z) from train data 
         self.sensor_min_max = self.compute_sensor_min_max(data)
 
-        # Now scale the training data (excluding timestamp)
+        # Scale the training data
         scaled_data = self.min_max_scale(data, self.sensor_min_max)
         
-        # Scale timestamps using StandardScaler
-        self.timestamp_scaler = StandardScaler().fit(self.timestamps_train.reshape(-1, 1))
-        scaled_timestamps_train = self.timestamp_scaler.transform(self.timestamps_train.reshape(-1, 1))
+        # Split into train and validation sets
+        data_len = len(scaled_data)
+        self.train = scaled_data[:int(data_len * 0.8)]
+        self.val = scaled_data[int(data_len * 0.8):]
 
-        
-         # Reattach timestamps to scaled data (place timestamp back as the first column)
-        self.train = np.column_stack((scaled_timestamps_train, scaled_data[:, 1:]))
-        print("Train data with ts", self.train[:5])
-        print("Training scale complete")
-
-        # Read and scale the test data using the same min/max from training
+        # Read and scale the test data
         test_data = pd.read_csv(data_path + '/test.csv')
-        
-        self.timestamps_test = test_data.iloc[:, 1].values
         test_data = test_data.values[:, [0, 2, 3, 4]]  # Keep sensor, x, y, z columns only
         test_data = np.nan_to_num(test_data)
-        
-        # scale the test data (excluding timestamp)
         self.test = self.min_max_scale(test_data, self.sensor_min_max)
-        
-        # Scale timestamps using the same StandardScaler
-        scaled_timestamps_test = self.timestamp_scaler.transform(self.timestamps_test.reshape(-1, 1))
-        
-        self.test = np.column_stack((scaled_timestamps_test, self.test[:, 1:]))
-        print("test data:", self.test[:5])
 
         # Read test labels
         self.test_labels = pd.read_csv(data_path + '/test_label.csv').values[:, 1:]
         
         print("test:", self.test.shape)
         print("train:", self.train.shape)
-
+        print("val:", self.val.shape)
 
     def compute_sensor_min_max(self, data):
         """
@@ -280,27 +260,28 @@ class WACASegLoader(Dataset):
         return scaled_data
     
     def __len__(self):
-        """
-        Number of images in the object dataset.
-        mode : "train" or "test"
-        """
         if self.mode == "train":
             return (self.train.shape[0] - self.win_size) // self.step + 1
-        elif (self.mode == 'test'):
+        elif self.mode == 'val':
+            return (self.val.shape[0] - self.win_size) // self.step + 1
+        elif self.mode == 'test':
             return (self.test.shape[0] - self.win_size) // self.step + 1
         else:
-            return (self.train.shape[0] - self.win_size) // self.step + 1
+            return (self.test.shape[0] - self.win_size) // self.win_size + 1
 
     def __getitem__(self, index):
         index = index * self.step
         if self.mode == "train":
             return np.float32(self.train[index:index + self.win_size]), np.float32(self.test_labels[0:self.win_size])
-        elif (self.mode == 'test'):
+        elif self.mode == 'val':
+            return np.float32(self.val[index:index + self.win_size]), np.float32(self.test_labels[0:self.win_size])
+        elif self.mode == 'test':
             return np.float32(self.test[index:index + self.win_size]), np.float32(
                 self.test_labels[index:index + self.win_size])
         else:
-            return np.float32(self.train[index:index + self.win_size]), np.float32(self.test_labels[0:self.win_size])
-        
+            return np.float32(self.test[
+                              index // self.step * self.win_size:index // self.step * self.win_size + self.win_size]), np.float32(
+                self.test_labels[index // self.step * self.win_size:index // self.step * self.win_size + self.win_size])
 
 class SMDSegLoader(object):
     def __init__(self, data_path, win_size, step, mode="train"):
